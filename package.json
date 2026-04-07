@@ -1,0 +1,17 @@
+{
+  "name": "issue-validator-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "npm run test:issue-validator",
+    "test:issue-validator": "npm run test --workspace @reddwarf/issue-validator"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}
