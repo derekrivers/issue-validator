@@ -6,6 +6,15 @@ import {
   validateIssue,
 } from './index.js';
 
+const createValidIssue = (overrides: Partial<Parameters<typeof validateIssue>[0]> = {}) => ({
+  title: 'Implement structured validator rules',
+  summary: 'Ensure issue data is schema-checked and actionable.',
+  acceptanceCriteria: ['Validator returns result objects'],
+  affectedPaths: ['packages/issue-validator'],
+  requestedCapabilities: ['can_run_tests'],
+  ...overrides,
+});
+
 describe('IssueInputSchema', () => {
   it('accepts a well-formed issue payload', () => {
     const parsed = IssueInputSchema.parse({
@@ -36,18 +45,13 @@ describe('IssueInputSchema', () => {
 });
 
 describe('validateIssue', () => {
-  it('returns a schema-valid result for a valid payload', () => {
-    const result = validateIssue({
-      title: 'Validate issue payloads',
-      summary: 'Ensure issue data is schema-checked.',
-      acceptanceCriteria: ['Validator returns result objects'],
-      affectedPaths: ['packages/issue-validator'],
-      requestedCapabilities: ['can_run_tests'],
-    });
+  it('returns a schema-valid result for a clean payload', () => {
+    const result = validateIssue(createValidIssue());
 
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
-    expect(result.normalizedInput?.title).toBe('Validate issue payloads');
+    expect(result.warnings).toEqual([]);
+    expect(result.normalizedInput?.title).toBe('Implement structured validator rules');
     expect(() => ValidationResultSchema.parse(result)).not.toThrow();
   });
 
@@ -63,6 +67,68 @@ describe('validateIssue', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.normalizedInput).toBeUndefined();
+    expect(() => ValidationResultSchema.parse(result)).not.toThrow();
+  });
+
+  it('adds an error when the title is shorter than 10 characters', () => {
+    const result = validateIssue(createValidIssue({ title: 'Too short' }));
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      'title-length: title must be at least 10 characters long',
+    );
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('adds an error when the title is longer than 200 characters', () => {
+    const result = validateIssue(createValidIssue({ title: 'A'.repeat(201) }));
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      'title-length: title must be at most 200 characters long',
+    );
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('detects generic blocked titles case-insensitively', () => {
+    const result = validateIssue(createValidIssue({ title: 'fIx ThIs' }));
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      'generic-title: title is too generic to be actionable',
+    );
+  });
+
+  it('adds a warning for broad-scope body signals without invalidating the issue by itself', () => {
+    const result = validateIssue(
+      createValidIssue({
+        summary: 'We should rewrite the entire system from scratch.',
+      }),
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toContain(
+      'scope-signal: issue may be too broad for a single actionable task',
+    );
+  });
+
+  it('merges multiple simultaneous findings and preserves warnings alongside errors', () => {
+    const result = validateIssue(
+      createValidIssue({
+        title: 'TODO',
+        summary: 'Complete the whole codebase overhaul from scratch.',
+      }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toEqual([
+      'title-length: title must be at least 10 characters long',
+      'generic-title: title is too generic to be actionable',
+    ]);
+    expect(result.warnings).toEqual([
+      'scope-signal: issue may be too broad for a single actionable task',
+    ]);
     expect(() => ValidationResultSchema.parse(result)).not.toThrow();
   });
 });
