@@ -1,39 +1,42 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  __testUtils,
   IssueInputSchema,
   ValidationResultSchema,
   validateIssue,
 } from './index.js';
 
-const createValidIssue = (overrides: Partial<Parameters<typeof validateIssue>[0]> = {}) => ({
-  title: 'Implement structured validator rules',
-  summary: 'Ensure issue data is schema-checked and actionable.',
-  acceptanceCriteria: ['Validator returns result objects'],
-  affectedPaths: ['packages/issue-validator'],
-  requestedCapabilities: ['can_run_tests'],
+const createIssue = (overrides: Partial<Parameters<typeof validateIssue>[0]> = {}) => ({
+  title: 'Implement acceptance criteria validator',
+  body: [
+    '## Summary',
+    'Add deterministic validation for issue bodies.',
+    '',
+    '## Acceptance Criteria',
+    '- Parses a dedicated section',
+    '- Requires at least three items',
+    '- Reports vague items individually',
+  ].join('\n'),
+  labels: ['enhancement'],
+  knownFingerprints: [],
   ...overrides,
 });
 
 describe('IssueInputSchema', () => {
   it('accepts a well-formed issue payload', () => {
-    const parsed = IssueInputSchema.parse({
-      title: 'Establish scaffolding',
-      summary: 'Create the package structure for the validator.',
-      acceptanceCriteria: ['Root config exists', 'Package exports validateIssue'],
-      affectedPaths: ['packages/issue-validator/src/index.ts'],
-      requestedCapabilities: ['can_write_code'],
-    });
+    const parsed = IssueInputSchema.parse(createIssue());
 
-    expect(parsed.title).toBe('Establish scaffolding');
-    expect(parsed.acceptanceCriteria).toHaveLength(2);
+    expect(parsed.title).toBe('Implement acceptance criteria validator');
+    expect(parsed.labels).toEqual(['enhancement']);
   });
 
   it('rejects an invalid issue payload', () => {
     const result = IssueInputSchema.safeParse({
       title: '',
-      summary: '',
-      acceptanceCriteria: [''],
+      body: '',
+      labels: [],
+      knownFingerprints: [],
     });
 
     expect(result.success).toBe(false);
@@ -44,24 +47,51 @@ describe('IssueInputSchema', () => {
   });
 });
 
+describe('acceptance criteria parser', () => {
+  it('detects level 2 and 3 headings case-insensitively and stops at the next heading', () => {
+    expect(
+      __testUtils.extractAcceptanceCriteriaSection([
+        '## ACCEPTANCE CRITERIA',
+        '- First item',
+        '- Second item',
+        '## Notes',
+        '- Ignored item',
+      ].join('\n')),
+    ).toEqual({
+      found: true,
+      items: ['First item', 'Second item'],
+    });
+
+    expect(
+      __testUtils.extractAcceptanceCriteriaSection([
+        '### Acceptance Criteria',
+        '- Third item',
+      ].join('\n')),
+    ).toEqual({
+      found: true,
+      items: ['Third item'],
+    });
+  });
+});
+
 describe('validateIssue', () => {
   it('returns a schema-valid result for a clean payload', () => {
-    const result = validateIssue(createValidIssue());
+    const result = validateIssue(createIssue());
 
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     expect(result.warnings).toEqual([]);
-    expect(result.normalizedInput?.title).toBe('Implement structured validator rules');
+    expect(result.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.normalizedInput?.title).toBe('Implement acceptance criteria validator');
     expect(() => ValidationResultSchema.parse(result)).not.toThrow();
   });
 
   it('returns validation errors for an invalid payload shape', () => {
     const result = validateIssue({
       title: '',
-      summary: '',
-      acceptanceCriteria: [''],
-      affectedPaths: [],
-      requestedCapabilities: [],
+      body: '',
+      labels: [],
+      knownFingerprints: [],
     } as never);
 
     expect(result.valid).toBe(false);
@@ -71,64 +101,112 @@ describe('validateIssue', () => {
   });
 
   it('adds an error when the title is shorter than 10 characters', () => {
-    const result = validateIssue(createValidIssue({ title: 'Too short' }));
+    const result = validateIssue(createIssue({ title: 'Too short' }));
 
     expect(result.valid).toBe(false);
-    expect(result.errors).toContain(
-      'title-length: title must be at least 10 characters long',
-    );
-    expect(result.warnings).toEqual([]);
+    expect(result.errors).toContain('Title too short — minimum 10 characters');
   });
 
   it('adds an error when the title is longer than 200 characters', () => {
-    const result = validateIssue(createValidIssue({ title: 'A'.repeat(201) }));
+    const result = validateIssue(createIssue({ title: 'A'.repeat(201) }));
 
     expect(result.valid).toBe(false);
-    expect(result.errors).toContain(
-      'title-length: title must be at most 200 characters long',
-    );
-    expect(result.warnings).toEqual([]);
+    expect(result.errors).toContain('Title too long — maximum 200 characters');
   });
 
   it('detects generic blocked titles case-insensitively', () => {
-    const result = validateIssue(createValidIssue({ title: 'fIx ThIs' }));
+    const result = validateIssue(createIssue({ title: 'tOdO' }));
 
     expect(result.valid).toBe(false);
     expect(result.errors).toContain(
-      'generic-title: title is too generic to be actionable',
+      'Title is too generic — provide a specific description of the change',
     );
   });
 
   it('adds a warning for broad-scope body signals without invalidating the issue by itself', () => {
     const result = validateIssue(
-      createValidIssue({
-        summary: 'We should rewrite the entire system from scratch.',
-      }),
+      createIssue({ body: '## Acceptance Criteria\n- First item\n- Second item\n- Third item\n\nWe should rewrite the service.' }),
     );
 
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     expect(result.warnings).toContain(
-      'scope-signal: issue may be too broad for a single actionable task',
+      'Issue may be too broad in scope — consider splitting into smaller tasks',
     );
+  });
+
+  it('adds an error when the acceptance criteria heading is missing', () => {
+    const result = validateIssue(
+      createIssue({ body: '## Summary\nMissing the required section entirely.' }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      "Missing Acceptance Criteria section — add a '## Acceptance Criteria' heading",
+    );
+  });
+
+  it('adds an error when the acceptance criteria section has zero items', () => {
+    const result = validateIssue(
+      createIssue({ body: '## Acceptance Criteria\n\n## Next Section\n- Outside section' }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('Acceptance Criteria must contain at least 3 items');
+  });
+
+  it('adds an error when fewer than 3 acceptance criteria items are present', () => {
+    const result = validateIssue(
+      createIssue({ body: '## Acceptance Criteria\n- One\n- Two' }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain('Acceptance Criteria must contain at least 3 items');
+  });
+
+  it('does not add an item-count error when exactly 3 acceptance criteria items are present', () => {
+    const result = validateIssue(
+      createIssue({ body: '### Acceptance Criteria\n- One\n- Two\n- Three' }),
+    );
+
+    expect(result.errors).not.toContain('Acceptance Criteria must contain at least 3 items');
+  });
+
+  it('adds one warning for a vague acceptance criteria item', () => {
+    const result = validateIssue(
+      createIssue({ body: '## Acceptance Criteria\n- It works\n- Has metrics\n- Saves state' }),
+    );
+
+    expect(result.warnings).toEqual(["Acceptance Criteria item may be too vague: 'It works'"]);
+  });
+
+  it('adds multiple warnings for multiple vague acceptance criteria items', () => {
+    const result = validateIssue(
+      createIssue({
+        body: '## Acceptance Criteria\n- It works\n- Tests pass\n- Saves state',
+      }),
+    );
+
+    expect(result.warnings).toEqual([
+      "Acceptance Criteria item may be too vague: 'It works'",
+      "Acceptance Criteria item may be too vague: 'Tests pass'",
+    ]);
   });
 
   it('merges multiple simultaneous findings and preserves warnings alongside errors', () => {
     const result = validateIssue(
-      createValidIssue({
+      createIssue({
         title: 'TODO',
-        summary: 'Complete the whole codebase overhaul from scratch.',
+        body: '## Acceptance Criteria\n- It works\n- Second item',
       }),
     );
 
     expect(result.valid).toBe(false);
     expect(result.errors).toEqual([
-      'title-length: title must be at least 10 characters long',
-      'generic-title: title is too generic to be actionable',
+      'Title too short — minimum 10 characters',
+      'Title is too generic — provide a specific description of the change',
+      'Acceptance Criteria must contain at least 3 items',
     ]);
-    expect(result.warnings).toEqual([
-      'scope-signal: issue may be too broad for a single actionable task',
-    ]);
-    expect(() => ValidationResultSchema.parse(result)).not.toThrow();
+    expect(result.warnings).toEqual(["Acceptance Criteria item may be too vague: 'It works'"]);
   });
 });
